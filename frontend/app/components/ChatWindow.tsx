@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { format } from "date-fns";
+import { getMediaUrl } from "@/lib/config";
 
 interface Message {
   _id: string;
@@ -121,6 +122,8 @@ export default function ChatWindow({
           }
 
           const isOwn = msg.from === currentUser;
+          const mediaFullUrl = msg.mediaUrl ? getMediaUrl(msg.mediaUrl) : "";
+
           return (
             <div
               key={msg._id}
@@ -133,16 +136,16 @@ export default function ChatWindow({
                     : "bg-tg-message-in rounded-2xl rounded-bl-md"
                 }`}
               >
-                {msg.type === "image" && msg.mediaUrl && (
+                {msg.type === "image" && mediaFullUrl && (
                   <img
-                    src={msg.mediaUrl}
-                    alt="image"
+                    src={mediaFullUrl}
+                    alt="attachment"
                     className="max-w-full rounded-lg mb-1 max-h-60 object-cover"
                   />
                 )}
-                {msg.type === "file" && msg.mediaUrl && (
+                {msg.type === "file" && mediaFullUrl && (
                   <a
-                    href={msg.mediaUrl}
+                    href={mediaFullUrl}
                     target="_blank"
                     rel="noreferrer"
                     className="flex items-center gap-2 text-tg-blue underline mb-1"

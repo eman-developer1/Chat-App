@@ -3,8 +3,8 @@
 import { useState, useEffect, useRef, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+import axios from "axios";
+import { authApi, extractErrorMessage, type ApiErrorResponse } from "@/lib/api";
 
 function VerifyContent() {
   const router = useRouter();
@@ -132,27 +132,12 @@ function VerifyContent() {
     setIsExpired(false);
 
     try {
-      const res = await fetch(`${API_URL}/api/auth/verify-email`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: email.toLowerCase().trim(), otp: fullOtp }),
+      const data = await authApi.verifyEmail({
+        email: email.toLowerCase().trim(),
+        otp: fullOtp,
       });
 
-      const data = await res.json();
-
-      if (!res.ok) {
-        setError(data.error || "Verification failed. Please check the code.");
-        if (data.expired) {
-          setIsExpired(true);
-        }
-        if (data.isVerified) {
-          setIsVerified(true);
-        }
-        setLoading(false);
-        return;
-      }
-
-      setSuccess("Email verified successfully! Redirecting to login...");
+      setSuccess(data.message || "Email verified successfully! Redirecting to login...");
       setIsVerified(true);
       if (typeof window !== "undefined") {
         localStorage.removeItem("pending_verify_email");
@@ -163,8 +148,17 @@ function VerifyContent() {
       setTimeout(() => {
         router.push("/?verified=true");
       }, 2000);
-    } catch {
-      setError("Network error. Please verify the backend server is reachable.");
+    } catch (err: unknown) {
+      if (axios.isAxiosError(err)) {
+        const resData = err.response?.data as ApiErrorResponse | undefined;
+        if (resData?.expired) {
+          setIsExpired(true);
+        }
+        if (resData?.isVerified) {
+          setIsVerified(true);
+        }
+      }
+      setError(extractErrorMessage(err, "Verification failed. Please check the code."));
     } finally {
       setLoading(false);
     }
@@ -185,29 +179,23 @@ function VerifyContent() {
     setIsExpired(false);
 
     try {
-      const res = await fetch(`${API_URL}/api/auth/resend-otp`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: email.toLowerCase().trim() }),
-      });
+      const data = await authApi.resendOtp({ email: email.toLowerCase().trim() });
 
-      const data = await res.json();
-
-      if (!res.ok) {
-        setError(data.error || "Failed to resend verification code.");
-        if (data.isVerified) {
-          setIsVerified(true);
-        }
-        setResendLoading(false);
-        return;
-      }
-
-      setSuccess("A new 6-digit verification code has been sent to your email!");
-      setCountdown(60);
+      setSuccess(data.message || "A new 6-digit verification code has been sent to your email!");
+      setCountdown(data.waitSeconds || 60);
       setOtp(["", "", "", "", "", ""]);
       inputRefs.current[0]?.focus();
-    } catch {
-      setError("Network error while requesting code resend.");
+    } catch (err: unknown) {
+      if (axios.isAxiosError(err)) {
+        const resData = err.response?.data as ApiErrorResponse | undefined;
+        if (resData?.isVerified) {
+          setIsVerified(true);
+        }
+        if (resData?.waitSeconds) {
+          setCountdown(resData.waitSeconds);
+        }
+      }
+      setError(extractErrorMessage(err, "Failed to resend verification code."));
     } finally {
       setResendLoading(false);
     }
@@ -423,4 +411,3 @@ export default function VerifyPage() {
     </Suspense>
   );
 }
-

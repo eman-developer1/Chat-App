@@ -1,6 +1,14 @@
 "use client";
 
 import { useState } from "react";
+import { getMediaUrl } from "@/lib/config";
+
+interface SearchUser {
+  username: string;
+  email: string;
+  bio?: string;
+  avatar?: string;
+}
 
 interface SidebarProps {
   username: string;
@@ -9,7 +17,7 @@ interface SidebarProps {
   recentChats: string[];
   onSelectChat: (chat: string) => void;
   onLogout: () => void;
-  onSearch: (query: string) => Promise<{ username: string; email: string }[]>;
+  onSearch: (query: string) => Promise<SearchUser[]>;
   onOpenSettings: () => void;
 }
 
@@ -24,7 +32,7 @@ export default function Sidebar({
   onOpenSettings,
 }: SidebarProps) {
   const [searchQuery, setSearchQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<{ username: string; email: string }[]>([]);
+  const [searchResults, setSearchResults] = useState<SearchUser[]>([]);
   const [searching, setSearching] = useState(false);
 
   const handleSearch = async (q: string) => {
@@ -103,6 +111,9 @@ export default function Sidebar({
         {displayList.map((user) => {
           const isOnline = onlineUsers.includes(user);
           const isActive = currentChat === user;
+          const searchMatch = searchResults.find((s) => s.username === user);
+          const avatarUrl = searchMatch?.avatar ? getMediaUrl(searchMatch.avatar) : "";
+
           return (
             <button
               key={user}
@@ -112,8 +123,12 @@ export default function Sidebar({
               }`}
             >
               <div className="relative shrink-0">
-                <div className="w-[48px] h-[48px] rounded-full bg-[#5288c1] flex items-center justify-center text-white font-medium text-lg">
-                  {user.charAt(0).toUpperCase()}
+                <div className="w-[48px] h-[48px] rounded-full bg-[#5288c1] flex items-center justify-center text-white font-medium text-lg overflow-hidden">
+                  {avatarUrl ? (
+                    <img src={avatarUrl} alt={user} className="w-full h-full object-cover" />
+                  ) : (
+                    user.charAt(0).toUpperCase()
+                  )}
                 </div>
                 {isOnline && (
                   <span className="absolute bottom-0.5 right-0.5 w-3 h-3 bg-[#4dcd5e] rounded-full border-2 border-tg-sidebar"></span>

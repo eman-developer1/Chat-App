@@ -2,8 +2,18 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import axios from "axios";
 import { getSocket, disconnectSocket } from "@/lib/socket";
 import { useWebRTC } from "@/lib/useWebRTC";
+import {
+  authApi,
+  mediaApi,
+  userApi,
+  extractErrorMessage,
+  type User,
+  type ApiErrorResponse,
+} from "@/lib/api";
+import { getMediaUrl } from "@/lib/config";
 import Sidebar from "./components/Sidebar";
 import ChatWindow from "./components/ChatWindow";
 import MessageInput from "./components/MessageInput";
@@ -23,16 +33,6 @@ interface Message {
   createdAt: string;
   deletedForEveryone?: boolean;
 }
-
-interface User {
-  id: string;
-  email: string;
-  username: string;
-  bio?: string;
-  avatar?: string;
-}
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
 
 export default function Home() {
   const router = useRouter();
@@ -54,17 +54,43 @@ export default function Home() {
   const [typingUser, setTypingUser] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
 
-  // WebRTC calls (must stay above any early return)
+  // WebRTC calls (kept above early returns to comply with React hook rules)
   const callSocket = token ? getSocket(token) : null;
   const call = useWebRTC(callSocket, user?.username, user?.username);
 
+  // Auth Persistence and Session Validation
   useEffect(() => {
-    const saved = localStorage.getItem("chat_token");
+    const savedToken = localStorage.getItem("chat_token");
     const savedUser = localStorage.getItem("chat_user");
-    if (saved && savedUser) {
+
+    if (savedToken && savedUser) {
       try {
-        setToken(saved);
-        setUser(JSON.parse(savedUser));
+        const parsedUser: User = JSON.parse(savedUser);
+        setToken(savedToken);
+        setUser(parsedUser);
+
+        // Validate session against backend & sync profile
+        if (parsedUser.username) {
+          authApi
+            .getCurrentUser(parsedUser.username)
+            .then((fresh) => {
+              if (fresh) {
+                const updated: User = {
+                  ...parsedUser,
+                  ...fresh,
+                };
+                setUser(updated);
+                localStorage.setItem("chat_user", JSON.stringify(updated));
+              }
+            })
+            .catch((err) => {
+              // If backend rejects the token (401 or 403), log out to prevent stuck state
+              if (axios.isAxiosError(err) && (err.response?.status === 401 || err.response?.status === 403)) {
+                console.warn("Session expired or invalid. Logging out.");
+                handleLogout();
+              }
+            });
+        }
       } catch {
         localStorage.removeItem("chat_token");
         localStorage.removeItem("chat_user");
@@ -86,6 +112,7 @@ export default function Home() {
     }
   }, []);
 
+  // Socket.IO event setup
   useEffect(() => {
     if (!token || !user) return;
 
@@ -175,6 +202,7 @@ export default function Home() {
     };
   }, [token, user, currentChat]);
 
+  // Load chat room & message history
   useEffect(() => {
     if (!token || !user || !currentChat) return;
     const socket = getSocket(token);
@@ -193,42 +221,42 @@ export default function Home() {
     setSuccessMsg("");
     setUnverifiedEmail(null);
     setLoading(true);
-    try {
-      const endpoint = authMode === "login" ? "/api/auth/login" : "/api/auth/register";
-      const body = authMode === "login" ? { email, password } : { email, username, password };
-      const res = await fetch(`${API_URL}${endpoint}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        if (res.status === 403 || data.isVerified === false) {
-          const targetEmail = (data.email || email).toLowerCase().trim();
-          setUnverifiedEmail(targetEmail);
-          setError(data.error || "Please verify your email before logging in.");
-        } else {
-          setError(data.error || "Something went wrong");
-        }
-        setLoading(false);
-        return;
-      }
 
-      // If registering, redirect to email verification page with the email
-      if (authMode === "register") {
+    try {
+      if (authMode === "login") {
+        const data = await authApi.login({
+          email: email.trim(),
+          password,
+        });
+
+        localStorage.setItem("chat_token", data.token);
+        localStorage.setItem("chat_user", JSON.stringify(data.user));
+        setToken(data.token);
+        setUser(data.user);
+      } else {
+        const data = await authApi.register({
+          email: email.trim(),
+          username: username.trim(),
+          password,
+        });
+
         const targetEmail = (data.email || email).toLowerCase().trim();
         localStorage.setItem("pending_verify_email", targetEmail);
         router.push(`/verify?email=${encodeURIComponent(targetEmail)}`);
-        return;
       }
-
-      // Login success
-      localStorage.setItem("chat_token", data.token);
-      localStorage.setItem("chat_user", JSON.stringify(data.user));
-      setToken(data.token);
-      setUser(data.user);
-    } catch {
-      setError("Network error. Is the backend running?");
+    } catch (err: unknown) {
+      if (axios.isAxiosError(err)) {
+        const data = err.response?.data as ApiErrorResponse | undefined;
+        if (err.response?.status === 403 || data?.isVerified === false) {
+          const targetEmail = (data?.email || email).toLowerCase().trim();
+          setUnverifiedEmail(targetEmail);
+          setError(data?.error || "Please verify your email before logging in.");
+        } else {
+          setError(extractErrorMessage(err, "Authentication failed. Please try again."));
+        }
+      } else {
+        setError(extractErrorMessage(err, "Authentication failed. Please try again."));
+      }
     } finally {
       setLoading(false);
     }
@@ -248,11 +276,11 @@ export default function Home() {
 
   const handleSearch = async (query: string) => {
     if (!token) return [];
-    const res = await fetch(`${API_URL}/api/search?q=${encodeURIComponent(query)}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!res.ok) return [];
-    return res.json();
+    try {
+      return await userApi.searchUsers(query);
+    } catch {
+      return [];
+    }
   };
 
   const handleSend = useCallback(
@@ -262,7 +290,7 @@ export default function Home() {
         to: currentChat,
         content,
         type,
-        mediaUrl,
+        mediaUrl: mediaUrl ? getMediaUrl(mediaUrl) : "",
         fileName,
       });
     },
@@ -272,15 +300,15 @@ export default function Home() {
   const handleUpload = useCallback(
     async (file: File) => {
       if (!token) return null;
-      const form = new FormData();
-      form.append("file", file);
-      const res = await fetch(`${API_URL}/api/upload`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-        body: form,
-      });
-      if (!res.ok) return null;
-      return res.json();
+      try {
+        const res = await mediaApi.uploadFile(file);
+        return {
+          url: getMediaUrl(res.url),
+          fileName: res.fileName,
+        };
+      } catch {
+        return null;
+      }
     },
     [token]
   );
@@ -293,7 +321,6 @@ export default function Home() {
     [token]
   );
 
-  // Real WebRTC call (replaces the old alert placeholder)
   const handleCall = useCallback(
     (isVideo: boolean) => {
       if (!currentChat) return;
@@ -309,17 +336,15 @@ export default function Home() {
   const handleBlock = async (usernameToBlock: string) => {
     if (!token || !currentChat) return;
     if (!confirm(`Block ${usernameToBlock}?`)) return;
-    await fetch(`${API_URL}/api/block`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ username: usernameToBlock, block: true }),
-    });
-    setCurrentChat(null);
-    setRecentChats((prev) => prev.filter((u) => u !== usernameToBlock));
-    alert(`${usernameToBlock} blocked`);
+
+    try {
+      await userApi.blockUser(usernameToBlock, true);
+      setCurrentChat(null);
+      setRecentChats((prev) => prev.filter((u) => u !== usernameToBlock));
+      alert(`${usernameToBlock} blocked`);
+    } catch (err) {
+      alert(extractErrorMessage(err, `Failed to block ${usernameToBlock}`));
+    }
   };
 
   if (!token || !user) {
@@ -344,11 +369,34 @@ export default function Home() {
                 {successMsg}
               </div>
             )}
-            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" required className="w-full bg-tg-input text-tg-text placeholder-tg-text-secondary rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-tg-blue" />
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="Email"
+              required
+              className="w-full bg-tg-input text-tg-text placeholder-tg-text-secondary rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-tg-blue"
+            />
             {authMode === "register" && (
-              <input type="text" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Username (unique)" required minLength={3} className="w-full bg-tg-input text-tg-text placeholder-tg-text-secondary rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-tg-blue" />
+              <input
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="Username (unique)"
+                required
+                minLength={3}
+                className="w-full bg-tg-input text-tg-text placeholder-tg-text-secondary rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-tg-blue"
+              />
             )}
-            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password" required minLength={6} className="w-full bg-tg-input text-tg-text placeholder-tg-text-secondary rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-tg-blue" />
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Password"
+              required
+              minLength={6}
+              className="w-full bg-tg-input text-tg-text placeholder-tg-text-secondary rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-tg-blue"
+            />
             {error && (
               <div className="space-y-2">
                 <p className="text-red-400 text-sm text-center">{error}</p>
@@ -363,16 +411,46 @@ export default function Home() {
                 )}
               </div>
             )}
-            <button type="submit" disabled={loading} className="w-full bg-tg-blue hover:bg-tg-blue-dark text-white font-medium py-3 rounded-xl transition-colors disabled:opacity-50">
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full bg-tg-blue hover:bg-tg-blue-dark text-white font-medium py-3 rounded-xl transition-colors disabled:opacity-50"
+            >
               {loading ? "Please wait..." : authMode === "login" ? "Login" : "Create Account"}
             </button>
           </form>
 
           <p className="text-center text-tg-text-secondary text-sm mt-6">
             {authMode === "login" ? (
-              <>No account? <button onClick={() => { setAuthMode("register"); setError(""); setSuccessMsg(""); setUnverifiedEmail(null); }} className="text-tg-blue hover:underline">Create one</button></>
+              <>
+                No account?{" "}
+                <button
+                  onClick={() => {
+                    setAuthMode("register");
+                    setError("");
+                    setSuccessMsg("");
+                    setUnverifiedEmail(null);
+                  }}
+                  className="text-tg-blue hover:underline"
+                >
+                  Create one
+                </button>
+              </>
             ) : (
-              <>Already have account? <button onClick={() => { setAuthMode("login"); setError(""); setSuccessMsg(""); setUnverifiedEmail(null); }} className="text-tg-blue hover:underline">Login</button></>
+              <>
+                Already have account?{" "}
+                <button
+                  onClick={() => {
+                    setAuthMode("login");
+                    setError("");
+                    setSuccessMsg("");
+                    setUnverifiedEmail(null);
+                  }}
+                  className="text-tg-blue hover:underline"
+                >
+                  Login
+                </button>
+              </>
             )}
           </p>
         </div>

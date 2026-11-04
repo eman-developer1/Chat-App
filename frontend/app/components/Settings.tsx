@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useRef } from "react";
+import { profileApi, mediaApi, extractErrorMessage } from "@/lib/api";
+import { getMediaUrl } from "@/lib/config";
 
 interface SettingsProps {
   user: {
@@ -14,12 +16,11 @@ interface SettingsProps {
   onUpdate: (data: { bio: string; avatar: string }) => void;
 }
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
-
-export default function Settings({ user, token, onClose, onUpdate }: SettingsProps) {
+export default function Settings({ user, onClose, onUpdate }: SettingsProps) {
   const [bio, setBio] = useState(user.bio || "");
   const [avatar, setAvatar] = useState(user.avatar || "");
   const [saving, setSaving] = useState(false);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [message, setMessage] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -27,50 +28,42 @@ export default function Settings({ user, token, onClose, onUpdate }: SettingsPro
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const form = new FormData();
-    form.append("file", file);
+    setUploadingAvatar(true);
+    setMessage("");
 
     try {
-      const res = await fetch(`${API_URL}/api/upload`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-        body: form,
-      });
-      const data = await res.json();
+      const data = await mediaApi.uploadFile(file);
       if (data.url) {
         setAvatar(data.url);
       }
-    } catch {
-      setMessage("Upload failed");
+    } catch (err) {
+      setMessage(extractErrorMessage(err, "Avatar upload failed"));
+    } finally {
+      setUploadingAvatar(false);
     }
   };
 
   const handleSave = async () => {
     setSaving(true);
     setMessage("");
+
     try {
-      const res = await fetch(`${API_URL}/api/profile`, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ bio, avatar }),
+      const data = await profileApi.updateProfile({
+        bio: bio.trim(),
+        avatar,
       });
-      const data = await res.json();
-      if (res.ok) {
-        onUpdate({ bio: data.bio, avatar: data.avatar });
-        setMessage("Saved!");
-        setTimeout(onClose, 800);
-      } else {
-        setMessage(data.error || "Failed");
-      }
-    } catch {
-      setMessage("Network error");
+
+      onUpdate({ bio: data.bio || bio, avatar: data.avatar || avatar });
+      setMessage("Saved!");
+      setTimeout(onClose, 800);
+    } catch (err) {
+      setMessage(extractErrorMessage(err, "Failed to update profile"));
     } finally {
       setSaving(false);
     }
   };
+
+  const displayAvatarUrl = getMediaUrl(avatar);
 
   return (
     <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
@@ -85,16 +78,16 @@ export default function Settings({ user, token, onClose, onUpdate }: SettingsPro
         {/* Avatar */}
         <div className="flex flex-col items-center mb-6">
           <div
-            onClick={() => fileRef.current?.click()}
+            onClick={() => !uploadingAvatar && fileRef.current?.click()}
             className="w-24 h-24 rounded-full bg-[#5288c1] flex items-center justify-center text-white text-3xl font-medium cursor-pointer overflow-hidden relative group"
           >
-            {avatar ? (
-              <img src={avatar} alt="avatar" className="w-full h-full object-cover" />
+            {displayAvatarUrl ? (
+              <img src={displayAvatarUrl} alt="avatar" className="w-full h-full object-cover" />
             ) : (
               user.username.charAt(0).toUpperCase()
             )}
             <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center text-sm">
-              Change
+              {uploadingAvatar ? "Uploading..." : "Change"}
             </div>
           </div>
           <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleAvatar} />
@@ -124,7 +117,7 @@ export default function Settings({ user, token, onClose, onUpdate }: SettingsPro
 
         <button
           onClick={handleSave}
-          disabled={saving}
+          disabled={saving || uploadingAvatar}
           className="w-full bg-tg-blue hover:bg-tg-blue-dark text-white font-medium py-3 rounded-xl transition disabled:opacity-50"
         >
           {saving ? "Saving..." : "Save"}

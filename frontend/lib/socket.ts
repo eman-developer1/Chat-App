@@ -1,15 +1,19 @@
 import { io, Socket } from "socket.io-client";
-
-const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:3001";
+import { SOCKET_BASE_URL } from "./config";
 
 let socket: Socket | null = null;
 
 export const getSocket = (token?: string): Socket => {
   if (!socket) {
-    socket = io(SOCKET_URL, {
+    socket = io(SOCKET_BASE_URL, {
       autoConnect: false,
       transports: ["websocket", "polling"],
       auth: token ? { token } : undefined,
+      reconnection: true,
+      reconnectionAttempts: 10,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      timeout: 20000,
     });
   } else if (token) {
     socket.auth = { token };
